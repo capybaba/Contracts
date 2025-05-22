@@ -59,21 +59,24 @@ contract Presale is Ownable, ReentrancyGuard {
     uint256 public liquidityTokenAmount;
     uint256 public taxRate; // 5 (for 5%)
     address public taxRecipient;
-    bool public presaleEnded;
     bool public liquidityAdded;
     uint256 public liquidityUnlockTime;
+    bool public emergencyRefund;
+    uint256 public liquidityPercent;
+    uint256 public tokenPrice;
 
     mapping(address => uint256) public contributions;
 
     event TokensPurchased(address indexed buyer, uint256 amount, uint256 value);
-    event PresaleEnded(uint256 totalRaised, uint256 totalSold);
     event LiquidityAdded(uint256 tokenAmount, uint256 bnbAmount);
     event Withdrawn(address indexed owner, uint256 amount);
     event TaxPaid(address indexed recipient, uint256 amount);
+    event EmergencyRefundEnabled();
+    event EmergencyRefundClaimed(address indexed user, uint256 bnbAmount, uint256 tokenAmount);
+    event PancakeRouterChanged(address indexed oldRouter, address indexed newRouter);
 
     modifier onlyWhileActive() {
         require(block.timestamp >= startTime && block.timestamp < endTime, "Presale not active");
-        require(!presaleEnded, "Presale ended");
         _;
     }
 
@@ -83,30 +86,33 @@ contract Presale is Ownable, ReentrancyGuard {
         uint256 _softCap,
         uint256 _hardCap,
         uint256 _presaleTokenAmount,
-        uint256 _liquidityTokenAmount,
         uint256 _taxRate,
         address _taxRecipient,
-        uint256 _startTime
+        uint256 _startTime,
+        uint256 _durationDays,
+        uint256 _liquidityPercent,
+        uint256 _tokenPrice
     ) Ownable(msg.sender) {
         require(_token != address(0), "Invalid token address");
         require(_router != address(0), "Invalid router address");
-        require(_hardCap > _softCap, "Hardcap must be greater than softcap");
+        require(_hardCap == 0 || _hardCap > _softCap, "Hardcap must be zero or greater than softcap");
         require(_presaleTokenAmount > 0, "Presale token amount required");
-        require(_liquidityTokenAmount > 0, "Liquidity token amount required");
         require(_taxRecipient != address(0), "Invalid tax recipient");
+        require(_durationDays > 0, "Duration must be greater than zero");
+        require(_liquidityPercent > 0 && _liquidityPercent <= 100, "Liquidity percent must be 1-100");
+        require(_tokenPrice > 0, "Token price must be greater than zero");
         presaleToken = IERC20(_token);
         pancakeRouter = IPancakeRouter(_router);
         softCap = _softCap;
         hardCap = _hardCap;
         presaleTokenAmount = _presaleTokenAmount;
-        liquidityTokenAmount = _liquidityTokenAmount;
         taxRate = _taxRate;
         taxRecipient = _taxRecipient;
         startTime = _startTime;
-        endTime = _startTime + 7 days;
-        presaleEnded = false;
-        liquidityAdded = false;
-        uint256 totalRequired = _presaleTokenAmount + _liquidityTokenAmount;
+        endTime = _startTime + (_durationDays * 1 days);
+        liquidityPercent = _liquidityPercent;
+        tokenPrice = _tokenPrice;
+        uint256 totalRequired = _presaleTokenAmount;
         require(presaleToken.balanceOf(address(this)) >= totalRequired, "Insufficient tokens in presale contract");
     }
 
@@ -114,12 +120,18 @@ contract Presale is Ownable, ReentrancyGuard {
         buyTokens(msg.sender);
     }
 
-    function buyTokens(address beneficiary) public payable nonReentrant onlyWhileActive {
+    function buyTokens(address beneficiary) public payable nonReentrant {
+        require(block.timestamp >= startTime && block.timestamp < endTime, "Presale not active");
         require(msg.value > 0, "No BNB sent");
-        require(totalRaised + msg.value <= hardCap, "Hardcap reached");
-        uint256 tokenPerBnb = presaleTokenAmount / hardCap;
-        uint256 tokensToBuy = msg.value.getTokenAmount(tokenPerBnb);
-        require(totalSold + tokensToBuy <= presaleTokenAmount, "Not enough tokens left for presale");
+        if (hardCap != 0) {
+            require(totalRaised + msg.value <= hardCap, "Hardcap reached");
+        }
+        uint256 tokensToBuy = (msg.value * tokenPrice) / 1 ether;
+        if (hardCap != 0) {
+            require(totalSold + tokensToBuy <= presaleTokenAmount, "Not enough tokens left for presale");
+        } else {
+            require(totalSold + tokensToBuy <= (presaleTokenAmount * 60) / 100, "Not enough tokens left for presale");
+        }
         uint256 netValue = msg.value;
 
         // Immediately transfer tokens to buyer
@@ -128,33 +140,17 @@ contract Presale is Ownable, ReentrancyGuard {
         totalSold += tokensToBuy;
         contributions[beneficiary] += netValue;
         emit TokensPurchased(beneficiary, tokensToBuy, netValue);
-
-        // End presale if hardcap is reached
-        if (totalRaised >= hardCap) {
-            _endPresale();
-        }
-    }
-
-    function _endPresale() internal {
-        presaleEnded = true;
-        liquidityUnlockTime = block.timestamp + 1 days;
-        emit PresaleEnded(totalRaised, totalSold);
-    }
-
-    function endPresale() external onlyOwner {
-        require(!presaleEnded, "Already ended");
-        require(block.timestamp >= endTime || totalRaised >= hardCap, "Cannot end yet");
-        _endPresale();
     }
 
     function addLiquidity() external nonReentrant {
-        require(presaleEnded, "Presale not ended");
+        require(block.timestamp >= endTime, "Presale not ended");
         require(!liquidityAdded, "Liquidity already added");
         require(block.timestamp >= liquidityUnlockTime, "Liquidity unlock time not reached");
         require(totalRaised >= softCap, "Softcap not reached, cannot add liquidity");
 
-        uint256 bnbForLiquidity = address(this).balance;
-        uint256 tokensForLiquidity = liquidityTokenAmount;
+        uint256 contractBalance = address(this).balance;
+        uint256 bnbForLiquidity = (contractBalance * liquidityPercent) / 100;
+        uint256 tokensForLiquidity = (totalSold * 80) / 100; // 40% of totalSold
         require(presaleToken.balanceOf(address(this)) >= tokensForLiquidity, "Not enough tokens for liquidity");
 
         // Add liquidity to PancakeSwap and send LP tokens to burn address
@@ -164,11 +160,19 @@ contract Presale is Ownable, ReentrancyGuard {
             tokensForLiquidity,
             0,
             0,
-            address(0xdead), // Send LP tokens to burn address
+            address(0xdEaD), // Send LP tokens to burn address
             block.timestamp + 600
         );
         liquidityAdded = true;
         emit LiquidityAdded(tokensForLiquidity, bnbForLiquidity);
+
+        // Send the remaining BNB to taxRecipient
+        uint256 bnbForTaxRecipient = address(this).balance;
+        if (bnbForTaxRecipient > 0) {
+            (bool sent, ) = taxRecipient.call{value: bnbForTaxRecipient}("");
+            require(sent, "TaxRecipient transfer failed");
+            emit TaxPaid(taxRecipient, bnbForTaxRecipient);
+        }
     }
 
 
@@ -177,7 +181,7 @@ contract Presale is Ownable, ReentrancyGuard {
      * will be removed before deployment
      */
     function withdraw() external onlyOwner {
-        require(presaleEnded, "Presale not ended");
+        require(block.timestamp >= endTime, "Presale not ended");
         uint256 balance = address(this).balance;
         require(balance > 0, "No BNB to withdraw");
         (bool sent, ) = owner().call{value: balance}("");
@@ -189,8 +193,7 @@ contract Presale is Ownable, ReentrancyGuard {
     function refund(uint256 tokenAmount) external nonReentrant onlyWhileActive {
         require(tokenAmount > 0, "Refund amount must be greater than zero");
         // Calculate refund amount (same rate as purchase)
-        uint256 tokenPerBnb = presaleTokenAmount / hardCap;
-        uint256 bnbToRefund = tokenAmount / tokenPerBnb;
+        uint256 bnbToRefund = (tokenAmount * 1 ether) / tokenPrice;
         require(bnbToRefund > 0, "Refund value too small");
         require(address(this).balance >= bnbToRefund, "Insufficient BNB in contract");
 
@@ -213,5 +216,37 @@ contract Presale is Ownable, ReentrancyGuard {
         // Refund user
         (bool sent, ) = msg.sender.call{value: netRefund}("");
         require(sent, "Refund failed");
+    }
+
+    function enableEmergencyRefund() external onlyOwner {
+        require(!emergencyRefund, "Already enabled");
+        emergencyRefund = true;
+        emit EmergencyRefundEnabled();
+    }
+
+    function claimEmergencyRefund() external nonReentrant {
+        require(emergencyRefund, "Emergency refund not enabled");
+        uint256 contributed = contributions[msg.sender];
+        require(contributed > 0, "No contribution to refund");
+        uint256 tokensToReturn = (contributed * tokenPrice) / 1 ether;
+        require(tokensToReturn > 0, "No tokens to return");
+        require(presaleToken.transferFrom(msg.sender, address(this), tokensToReturn), "Token transfer failed");
+        contributions[msg.sender] = 0;
+        totalRaised -= contributed;
+        totalSold -= tokensToReturn;
+        (bool sent, ) = msg.sender.call{value: contributed}("");
+        require(sent, "Refund failed");
+        emit EmergencyRefundClaimed(msg.sender, contributed, tokensToReturn);
+    }
+
+    function isPresaleActive() public view returns (bool) {
+        return block.timestamp >= startTime && block.timestamp < endTime;
+    }
+
+    function setPancakeRouter(address newRouter) external onlyOwner {
+        require(newRouter != address(0), "Invalid router address");
+        address oldRouter = address(pancakeRouter);
+        pancakeRouter = IPancakeRouter(newRouter);
+        emit PancakeRouterChanged(oldRouter, newRouter);
     }
 } 
