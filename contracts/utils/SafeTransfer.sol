@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 /*
 MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
 MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
@@ -35,37 +37,24 @@ MMMMMMMMMMMMMMMMMMMMk;cllllllllllllllllllllllllo:cXMMMMMMMMM
 **/
 
 
-library PresaleMath {
+library SafeTransfer {
     /**
-     * @notice Calculate the number of tokens that can be bought for a given BNB amount and token price.
-     * @param bnbAmount Amount of BNB (in wei)
-     * @param tokenPrice Price per token (in wei)
-     * @return Amount of tokens
+     * @notice Safely transfer BNB to a recipient.
+     * @param to Recipient address
+     * @param amount Amount of BNB (in wei)
      */
-    function getTokenAmount(uint256 bnbAmount, uint256 tokenPrice) internal pure returns (uint256) {
-        return (bnbAmount * tokenPrice) / 1 ether;
+    function safeTransferBNB(address to, uint256 amount) internal {
+        (bool sent, ) = to.call{value: amount}("");
+        require(sent, "BNB transfer failed");
     }
 
     /**
-     * @notice Check if the cap (hardcap/softcap) is reached.
-     * @param raised Amount raised so far
-     * @param cap Cap value
-     * @return True if cap is reached or exceeded
+     * @notice Safely transfer ERC20 tokens to a recipient.
+     * @param token ERC20 token address
+     * @param to Recipient address
+     * @param amount Amount of tokens
      */
-    function isCapReached(uint256 raised, uint256 cap) internal pure returns (bool) {
-        return cap > 0 && raised >= cap;
-    }
-
-    /**
-     * @notice Check if a user's total contribution is within min/max buy limits.
-     * @param totalContribution User's total contribution after this purchase
-     * @param minBuyAmount Minimum allowed per user (0 for no limit)
-     * @param maxBuyAmount Maximum allowed per user (0 for no limit)
-     * @return True if within limits
-     */
-    function isWithinBuyLimits(uint256 totalContribution, uint256 minBuyAmount, uint256 maxBuyAmount) internal pure returns (bool) {
-        bool aboveMin = (minBuyAmount == 0) || (totalContribution >= minBuyAmount);
-        bool belowMax = (maxBuyAmount == 0) || (totalContribution <= maxBuyAmount);
-        return aboveMin && belowMax;
+    function safeTransferERC20(IERC20 token, address to, uint256 amount) internal {
+        require(token.transfer(to, amount), "ERC20 transfer failed");
     }
 } 

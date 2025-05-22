@@ -35,37 +35,26 @@ MMMMMMMMMMMMMMMMMMMMk;cllllllllllllllllllllllllo:cXMMMMMMMMM
 **/
 
 
-library PresaleMath {
+library PresaleUtils {
     /**
-     * @notice Calculate the number of tokens that can be bought for a given BNB amount and token price.
-     * @param bnbAmount Amount of BNB (in wei)
-     * @param tokenPrice Price per token (in wei)
-     * @return Amount of tokens
+     * @notice Check if the presale is currently active.
+     * @param startTime Presale start timestamp
+     * @param endTime Presale end timestamp
+     * @param hardCap Hard cap (0 for unlimited)
+     * @param totalRaised Amount raised so far
+     * @return True if presale is active
      */
-    function getTokenAmount(uint256 bnbAmount, uint256 tokenPrice) internal pure returns (uint256) {
-        return (bnbAmount * tokenPrice) / 1 ether;
+    function isPresaleActive(uint256 startTime, uint256 endTime, uint256 hardCap, uint256 totalRaised) internal view returns (bool) {
+        return block.timestamp >= startTime && block.timestamp < endTime && (hardCap == 0 || totalRaised < hardCap);
     }
 
     /**
-     * @notice Check if the cap (hardcap/softcap) is reached.
-     * @param raised Amount raised so far
-     * @param cap Cap value
-     * @return True if cap is reached or exceeded
+     * @notice Calculate the presale end time given a start time and duration in days.
+     * @param startTime Presale start timestamp
+     * @param durationDays Duration in days
+     * @return End timestamp
      */
-    function isCapReached(uint256 raised, uint256 cap) internal pure returns (bool) {
-        return cap > 0 && raised >= cap;
-    }
-
-    /**
-     * @notice Check if a user's total contribution is within min/max buy limits.
-     * @param totalContribution User's total contribution after this purchase
-     * @param minBuyAmount Minimum allowed per user (0 for no limit)
-     * @param maxBuyAmount Maximum allowed per user (0 for no limit)
-     * @return True if within limits
-     */
-    function isWithinBuyLimits(uint256 totalContribution, uint256 minBuyAmount, uint256 maxBuyAmount) internal pure returns (bool) {
-        bool aboveMin = (minBuyAmount == 0) || (totalContribution >= minBuyAmount);
-        bool belowMax = (maxBuyAmount == 0) || (totalContribution <= maxBuyAmount);
-        return aboveMin && belowMax;
+    function calculateEndTime(uint256 startTime, uint256 durationDays) internal pure returns (uint256) {
+        return startTime + (durationDays * 1 days);
     }
 } 
