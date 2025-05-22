@@ -16,4 +16,13 @@ interface IPancakeRouter {
         uint amountETH,
         uint liquidity
     );
+
+    function removeLiquidityETH(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountToken, uint amountETH);
 } 

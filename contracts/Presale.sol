@@ -74,6 +74,17 @@ contract Presale is Ownable, ReentrancyGuard {
     event EmergencyRefundEnabled();
     event EmergencyRefundClaimed(address indexed user, uint256 bnbAmount, uint256 tokenAmount);
     event PancakeRouterChanged(address indexed oldRouter, address indexed newRouter);
+    event PresaleTokenDeposited(address indexed owner, uint256 amount);
+    event PresaleDetailsSet(
+        address indexed owner,
+        uint256 softCap,
+        uint256 hardCap,
+        uint256 taxRate,
+        uint256 startTime,
+        uint256 endTime,
+        uint256 liquidityPercent,
+        uint256 tokenPrice
+    );
 
     modifier onlyWhileActive() {
         require(block.timestamp >= startTime && block.timestamp < endTime, "Presale not active");
@@ -81,39 +92,54 @@ contract Presale is Ownable, ReentrancyGuard {
     }
 
     constructor(
-        address _token,
-        address _router,
+        address _token
+    ) Ownable(msg.sender) {
+        require(_token != address(0), "Invalid token address");
+        presaleToken = IERC20(_token);
+        pancakeRouter = IPancakeRouter(address(0));
+        taxRecipient = msg.sender;
+        presaleTokenAmount = 0;
+        softCap = 0;
+        hardCap = 0;
+        taxRate = 0;
+        startTime = 0;
+        endTime = 0;
+        liquidityPercent = 0;
+        tokenPrice = 0;
+    }
+
+    function setPresaleDetails(
         uint256 _softCap,
         uint256 _hardCap,
-        uint256 _presaleTokenAmount,
         uint256 _taxRate,
-        address _taxRecipient,
         uint256 _startTime,
         uint256 _durationDays,
         uint256 _liquidityPercent,
         uint256 _tokenPrice
-    ) Ownable(msg.sender) {
-        require(_token != address(0), "Invalid token address");
-        require(_router != address(0), "Invalid router address");
+    ) external onlyOwner nonReentrant {
+        require(presaleTokenAmount == 0, "Presale token already set");
+        require(totalRaised == 0 && totalSold == 0, "Presale already started");
         require(_hardCap == 0 || _hardCap > _softCap, "Hardcap must be zero or greater than softcap");
-        require(_presaleTokenAmount > 0, "Presale token amount required");
-        require(_taxRecipient != address(0), "Invalid tax recipient");
         require(_durationDays > 0, "Duration must be greater than zero");
         require(_liquidityPercent > 0 && _liquidityPercent <= 100, "Liquidity percent must be 1-100");
         require(_tokenPrice > 0, "Token price must be greater than zero");
-        presaleToken = IERC20(_token);
-        pancakeRouter = IPancakeRouter(_router);
         softCap = _softCap;
         hardCap = _hardCap;
-        presaleTokenAmount = _presaleTokenAmount;
         taxRate = _taxRate;
-        taxRecipient = _taxRecipient;
         startTime = _startTime;
         endTime = _startTime + (_durationDays * 1 days);
         liquidityPercent = _liquidityPercent;
         tokenPrice = _tokenPrice;
-        uint256 totalRequired = _presaleTokenAmount;
-        require(presaleToken.balanceOf(address(this)) >= totalRequired, "Insufficient tokens in presale contract");
+        emit PresaleDetailsSet(msg.sender, _softCap, _hardCap, _taxRate, _startTime, endTime, _liquidityPercent, _tokenPrice);
+    }
+
+    // Owner가 presaleToken을 입금하고 presaleTokenAmount를 설정하는 함수
+    function setPresaleTokenAmount() external onlyOwner nonReentrant {
+        require(presaleTokenAmount == 0, "Presale token amount already set");
+        uint256 balance = presaleToken.balanceOf(address(this));
+        require(balance > 0, "No tokens in contract");
+        presaleTokenAmount = balance;
+        emit PresaleTokenDeposited(msg.sender, balance);
     }
 
     receive() external payable {
@@ -121,6 +147,7 @@ contract Presale is Ownable, ReentrancyGuard {
     }
 
     function buyTokens(address beneficiary) public payable nonReentrant {
+        require(presaleTokenAmount > 0, "Presale tokens not deposited");
         require(block.timestamp >= startTime && block.timestamp < endTime, "Presale not active");
         require(msg.value > 0, "No BNB sent");
         if (hardCap != 0) {
@@ -143,6 +170,7 @@ contract Presale is Ownable, ReentrancyGuard {
     }
 
     function addLiquidity() external nonReentrant {
+        require(presaleTokenAmount > 0, "Presale tokens not deposited");
         require(block.timestamp >= endTime, "Presale not ended");
         require(!liquidityAdded, "Liquidity already added");
         require(block.timestamp >= liquidityUnlockTime, "Liquidity unlock time not reached");
@@ -175,22 +203,9 @@ contract Presale is Ownable, ReentrancyGuard {
         }
     }
 
-
-    /*
-     * @dev only for test purpose
-     * will be removed before deployment
-     */
-    function withdraw() external onlyOwner {
-        require(block.timestamp >= endTime, "Presale not ended");
-        uint256 balance = address(this).balance;
-        require(balance > 0, "No BNB to withdraw");
-        (bool sent, ) = owner().call{value: balance}("");
-        require(sent, "Withdraw failed");
-        emit Withdrawn(owner(), balance);
-    }
-
     // Refund (sell) during presale period: user returns tokens to contract and receives BNB refund, 5% tax applied
     function refund(uint256 tokenAmount) external nonReentrant onlyWhileActive {
+        require(presaleTokenAmount > 0, "Presale tokens not deposited");
         require(tokenAmount > 0, "Refund amount must be greater than zero");
         // Calculate refund amount (same rate as purchase)
         uint256 bnbToRefund = (tokenAmount * 1 ether) / tokenPrice;
@@ -249,4 +264,73 @@ contract Presale is Ownable, ReentrancyGuard {
         pancakeRouter = IPancakeRouter(newRouter);
         emit PancakeRouterChanged(oldRouter, newRouter);
     }
+
+    /**
+     * @dev [TEST ONLY] Reset the presale contract.
+     * - If liquidity was added, remove liquidity and send all tokens/BNB to owner.
+     * - If not, just send all tokens/BNB to owner.
+     * - Resets all fundraising and sale state variables.
+     * - WARNING: This function is for testing only. REMOVE BEFORE DEPLOYMENT.
+     * @param lpToken LP token (pair) address for this presale-token/BNB pair
+     * @param lpAmount Amount of LP tokens to remove (should be full balance for full reset)
+     * @param amountTokenMin Minimum amount of presaleToken to receive when removing liquidity
+     * @param amountETHMin Minimum amount of BNB to receive when removing liquidity
+     * @param deadline Deadline timestamp for removeLiquidityETH
+     */
+    function resetPresale(
+        address lpToken,
+        uint256 lpAmount,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        uint256 deadline
+    ) external onlyOwner nonReentrant {
+        // 1. If liquidity was added, remove liquidity and collect tokens/BNB
+        if (liquidityAdded) {
+            // Approve router to spend LP tokens
+            IERC20(lpToken).approve(address(pancakeRouter), lpAmount);
+            // Remove liquidity (presaleToken + BNB will be sent to this contract)
+            pancakeRouter.removeLiquidityETH(
+                address(presaleToken),
+                lpAmount,
+                amountTokenMin,
+                amountETHMin,
+                address(this),
+                deadline
+            );
+        }
+        // 2. Send all presaleToken to owner
+        uint256 tokenBalance = presaleToken.balanceOf(address(this));
+        if (tokenBalance > 0) {
+            require(presaleToken.transfer(owner(), tokenBalance), "Token transfer failed");
+        }
+        // 3. Send all BNB to owner
+        uint256 bnbBalance = address(this).balance;
+        if (bnbBalance > 0) {
+            (bool sent, ) = owner().call{value: bnbBalance}("");
+            require(sent, "BNB transfer failed");
+        }
+        // 4. Reset fundraising and sale state variables
+        totalRaised = 0;
+        totalSold = 0;
+        liquidityAdded = false;
+        liquidityUnlockTime = 0;
+        emergencyRefund = false;
+        // Note: contributions mapping은 Solidity에서 전체 초기화 불가. 테스트에서는 별도 관리 필요.
+        // liquidityPercent, tokenPrice, presaleTokenAmount 등은 설정값이므로 초기화하지 않음.
+    }
 } 
+
+//
+/*
+    "tokenaddress",
+    "0x87FD5305E6a40F378da124864B2D479c2028BD86",
+    "10000000000000000000",
+    "50000000000000000000",
+    "8888888888888000000000000000000",
+    "5",
+    "0x3e41541075AAfe193258BCd494F8d447Db909386",
+    "1747731600",
+    "7",
+    "90",
+    "888888888000000000000000000"
+**/
