@@ -155,11 +155,9 @@ contract Presale is Ownable, ReentrancyGuard {
             require(totalRaised + msg.value <= hardCap, "Hardcap reached");
         }
         uint256 tokensToBuy = PresaleMath.getTokenAmount(msg.value, tokenPrice);
-        if (hardCap != 0) {
-            require(totalSold + tokensToBuy <= presaleTokenAmount, "Not enough tokens left for presale");
-        } else {
-            require(totalSold + tokensToBuy <= (presaleTokenAmount * 60) / 100, "Not enough tokens left for presale");
-        }
+
+        require(totalSold + tokensToBuy <= (presaleTokenAmount * 60) / 100, "Not enough tokens left for presale");
+
         _enforceBuyLimits(beneficiary, msg.value);
         presaleToken.safeTransferERC20(beneficiary, tokensToBuy);
         totalRaised += msg.value;
@@ -188,11 +186,9 @@ contract Presale is Ownable, ReentrancyGuard {
         uint256 tax = TaxHandler.calculateTax(value, 80); // 0.8% tax (80 basis points)
         uint256 netValue = value - tax;
         uint256 tokensToBuy = PresaleMath.getTokenAmount(netValue, tokenPrice);
-        if (hardCap != 0) {
-            require(totalSold + tokensToBuy <= presaleTokenAmount, "Not enough tokens left for presale");
-        } else {
-            require(totalSold + tokensToBuy <= (presaleTokenAmount * 60) / 100, "Not enough tokens left for presale");
-        }
+
+        require(totalSold + tokensToBuy <= (presaleTokenAmount * 60) / 100, "Not enough tokens left for presale");
+
         if (tax > 0) {
             SafeTransfer.safeTransferBNB(taxRecipient, tax);
             emit PresaleEvents.TaxPaid(taxRecipient, tax);
@@ -213,7 +209,7 @@ contract Presale is Ownable, ReentrancyGuard {
 
         uint256 contractBalance = address(this).balance;
         uint256 bnbForLiquidity = (contractBalance * liquidityPercent) / 100;
-        uint256 tokensForLiquidity = (totalSold * 80) / 100; // 40% of totalSold
+        uint256 tokensForLiquidity = (totalSold * 40) / 60;
         require(presaleToken.balanceOf(address(this)) >= tokensForLiquidity, "Not enough tokens for liquidity");
 
         presaleToken.approve(address(pancakeRouter), tokensForLiquidity);
@@ -222,7 +218,7 @@ contract Presale is Ownable, ReentrancyGuard {
             tokensForLiquidity,
             0,
             0,
-            address(0xdEaD), // Send LP tokens to burn address
+            address(0x000000000000000000000000000000000000dEaD), // Send LP tokens to burn address
             block.timestamp + 600
         );
         liquidityAdded = true;
@@ -233,6 +229,16 @@ contract Presale is Ownable, ReentrancyGuard {
             SafeTransfer.safeTransferBNB(taxRecipient, bnbForTaxRecipient);
             emit PresaleEvents.TaxPaid(taxRecipient, bnbForTaxRecipient);
         }
+    }
+
+    function transferTokenToAirDropContractAndBurn(address to) onlyOwner external {
+        require(liquidityAdded, "Liquidity not added");
+        if (presaleToken.balanceOf(address(this)) > (totalSold * 18) / 1000) {
+            presaleToken.safeTransferERC20(to, (totalSold * 18) / 1000);
+        } else {
+            presaleToken.safeTransferERC20(to, presaleToken.balanceOf(address(this)));
+        }
+        presaleToken.safeTransferERC20(address(0x000000000000000000000000000000000000dEaD), presaleToken.balanceOf(address(this)));
     }
 
     /**
